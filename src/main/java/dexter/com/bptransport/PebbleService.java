@@ -41,8 +41,10 @@ import com.getpebble.android.kit.PebbleKit;
 import com.getpebble.android.kit.util.PebbleDictionary;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -50,6 +52,8 @@ import java.util.Timer;
 import java.util.TimerTask;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.logging.Logger;
 
 /**
  * Created by DEXTER on 2014.10.24..
@@ -95,9 +99,13 @@ public class PebbleService extends Service {
     private IQApp ciq_app;
     private ConnectIQ connect_iq;
     private IQDevice garmin_device;
-    private int garmin_retransmit = 0;
+    //private int garmin_retransmit = 0;
     ConnectIQ.IQSendMessageListener iq_send_message_listener;
-    List<Object> garmin_data;
+    //List<Object> garmin_data;
+    private List<List<Object>> messageQueue = Collections.synchronizedList(new ArrayList<List<Object>>());
+    private AtomicBoolean deliveryInProgress = new AtomicBoolean(false);
+    private int deliveryErrorCount = 0;
+    public static final int MAX_DELIVERY_ERROR = 3;
 
     public static class NearbyStops
     {
@@ -171,6 +179,7 @@ public class PebbleService extends Service {
                                         switch (type) {
                                             case MESSAGE_TYPE_GET_LANGUAGE: // Discover bulbs.
                                                 is_garmin_connected = true;
+                                                send_get_language_reply_to_garmin();
                                                 break;
                                             case MESSAGE_TYPE_GET_NEARBY_STOPS:
                                                 //get_nearby_stops();
@@ -294,30 +303,13 @@ public class PebbleService extends Service {
 
         });
 
-        iq_send_message_listener = new ConnectIQ.IQSendMessageListener() {
-
-            @Override
-            public void onMessageStatus(IQDevice device, IQApp app, ConnectIQ.IQMessageStatus status) {
-                Log.d(getPackageName(), "Garmin send status: " + status.name());
-                if (status != ConnectIQ.IQMessageStatus.SUCCESS) {
-                   /* if (garmin_retransmit < 3) {
-                        garmin_retransmit += 1;
-                        try {
-                            connect_iq.sendMessage(garmin_device, ciq_app, garmin_data, iq_send_message_listener);
-                        } catch (InvalidStateException e) {
-                            Log.d(getPackageName(), "ConnectIQ is not in a valid state");
-                        } catch (ServiceUnavailableException e) {
-                            Log.d(getPackageName(), "ConnectIQ service is unavailable.   Is Garmin Connect Mobile installed and running?");
-                        }
-                    }*/
-                }
-                else {
-                    garmin_data = null;
-                }
-            }
-
-        };
         return START_STICKY;
+    }
+
+    private void send_get_language_reply_to_garmin(){
+        ArrayList<Object> garmin_data = new ArrayList<Object>();
+        garmin_data.add(MESSAGE_TYPE_GET_LANGUAGE_REPLY);
+        enqueue_to_garmin(garmin_data);
     }
 
     private void send_get_language_reply()
@@ -479,10 +471,12 @@ public class PebbleService extends Service {
     }
 
     private void send_nearby_stops_to_garmin(NearbyStops[] nearby_stops) {
-       garmin_data = new ArrayList<Object>();
+        ArrayList<Object> garmin_data = new ArrayList<Object>();
 
-
+        garmin_data.add(MESSAGE_TYPE_GET_NEARBY_STOPS_REPLY);
         for (int i = 0; i < PebbleService.NEARBY_STOPS_LENGTH; i++) {
+            if (nearby_stops[i].string_id == null || nearby_stops[i].string_id.isEmpty())
+                continue;
             Map<String, Object> dictionary = new HashMap<String, Object>();
             dictionary.put("stop_id", nearby_stops[i].string_id);
             dictionary.put("stop_name", nearby_stops[i].stop_name);
@@ -493,15 +487,64 @@ public class PebbleService extends Service {
             garmin_data.add(dictionary);
         }
 
-        try {
-            garmin_retransmit = 0;
+        enqueue_to_garmin(garmin_data);
+    }
+    private Runnable sendMessageRunnable = new Runnable() {
+        @Override
+        public void run() {
 
-            connect_iq.sendMessage(garmin_device, ciq_app, garmin_data, iq_send_message_listener);
-        } catch (InvalidStateException e) {
-            Log.d(getPackageName(), "ConnectIQ is not in a valid state");
-        } catch (ServiceUnavailableException e) {
-            Log.d(getPackageName(), "ConnectIQ service is unavailable.   Is Garmin Connect Mobile installed and running?");
+            sendNextMessage();
         }
+    };
+
+    private void sendNextMessage() {
+        //TODO: check connectiq sdk ready
+        if (deliveryInProgress.get()) {
+            deliveryErrorCount++;
+            if (deliveryErrorCount > MAX_DELIVERY_ERROR) {
+                messageQueue.remove(0);
+                deliveryErrorCount = 0;
+                Log.d(getPackageName(), "Reached MAX_DELIVERY_ERROR, removing message");
+            }
+        }
+        if (messageQueue.size() == 0) {
+            deliveryInProgress.set(false);
+            return;
+        }
+        List<Object> message = messageQueue.get(0);
+        deliveryInProgress.set(true);
+
+        Log.d(getPackageName(), "Sending next message NOW.");
+        try {
+            connect_iq.sendMessage(garmin_device, ciq_app, message, new ConnectIQ.IQSendMessageListener() {
+                @Override
+                public void onMessageStatus(IQDevice iqDevice, IQApp iqApp, ConnectIQ.IQMessageStatus iqMessageStatus) {
+                    if (iqMessageStatus != ConnectIQ.IQMessageStatus.SUCCESS) {
+                        Log.d(getPackageName(), "Message " + iqMessageStatus.toString() + ", requeuing");
+                        handler.postDelayed(sendMessageRunnable, 200 + 200 * deliveryErrorCount);
+                    } else {
+                        Log.d(getPackageName(), "Message SUCCESS");
+                        messageQueue.remove(0);
+                        deliveryErrorCount = 0;
+                        deliveryInProgress.set(false);
+                        handler.postDelayed(sendMessageRunnable, 200);
+                    }
+                }
+            });
+        } catch (InvalidStateException e) {
+            e.printStackTrace();
+        } catch (ServiceUnavailableException e) {
+            e.printStackTrace();
+        }
+
+    }
+
+    private void enqueue_to_garmin(List<Object> garmin_data) {
+        if (!messageQueue.contains(garmin_data)) {
+            messageQueue.add(garmin_data);
+            Log.d(getPackageName(), "Queued garmin_data");
+        }
+        handler.post(sendMessageRunnable);
     }
 
     private void send_next_nearby_stop_to_pebble() {
@@ -575,9 +618,13 @@ public class PebbleService extends Service {
     @Override
     public void onDestroy()
     {
-        unregisterReceiver(pebble_data_receiver);
-        unregisterReceiver(pebble_ack_receiver);
-        unregisterReceiver(pebble_nack_receiver);
+        try {
+            unregisterReceiver(pebble_data_receiver);
+            unregisterReceiver(pebble_ack_receiver);
+            unregisterReceiver(pebble_nack_receiver);
+        } catch (IllegalArgumentException e) {
+
+        }
         super.onDestroy();
 
         Toast.makeText(getApplicationContext(), "PebbleService stopped;", Toast.LENGTH_SHORT).show();
