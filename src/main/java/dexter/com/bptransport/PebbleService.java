@@ -224,8 +224,9 @@ public class PebbleService extends Service {
     {
         async_nearby_stops =  new AsyncNearbyStops(this);
         ciq_app = new IQApp(GARMIN_APP_ID);
-        connect_iq = ConnectIQ.getInstance(getApplicationContext(), ConnectIQ.IQConnectType.TETHERED);
-        //ConnectIQ connect_iq = ConnectIQ.getInstance(getApplicationContext(), ConnectIQ.IQConnectType.WIRELESS);
+        //connect_iq = ConnectIQ.getInstance(getApplicationContext(), ConnectIQ.IQConnectType.TETHERED);
+        connect_iq = ConnectIQ.getInstance(getApplicationContext(), ConnectIQ.IQConnectType.WIRELESS);
+
         connect_iq.initialize(getApplicationContext(), true, ciq_listener);
 
 
