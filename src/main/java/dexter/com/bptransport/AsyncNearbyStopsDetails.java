@@ -56,6 +56,8 @@ public class AsyncNearbyStopsDetails extends AsyncTask<Object, Void, PebbleServi
 
         final long id = (Long) params[0];
         final String string_id = (String) params[1];
+        final boolean is_garmin = (Boolean) params[2];
+
         /*Thread thread = new Thread(new Runnable() {
             @Override
             public void run() {
@@ -78,7 +80,7 @@ public class AsyncNearbyStopsDetails extends AsyncTask<Object, Void, PebbleServi
             nearby_stops_details[i].start_time = 99999;
             nearby_stops_details[i].predicted_start_time = 0;
         }
-        combine_online_offline(nearby_stops_details);
+        combine_online_offline(nearby_stops_details, is_garmin);
         return nearby_stops_details;
     }
 
@@ -118,7 +120,7 @@ public class AsyncNearbyStopsDetails extends AsyncTask<Object, Void, PebbleServi
         }
     }
 
-    private void combine_online_offline(PebbleService.NearbyStopsDetails[] nearby_stops_details) {
+    private void combine_online_offline(PebbleService.NearbyStopsDetails[] nearby_stops_details, boolean is_garmin) {
 
         try {
             if (!json.getString("status").equals("OK"))
@@ -138,7 +140,11 @@ public class AsyncNearbyStopsDetails extends AsyncTask<Object, Void, PebbleServi
                 current.set(Calendar.SECOND, 0);
 
                 if (departure_time == current.getTimeInMillis() / 1000) {
-                    nearby_stops_details[i].predicted_start_time = get_start_time(row, "predictedDepartureTime");
+                    if (is_garmin) {
+                        nearby_stops_details[i].predicted_start_time = row.getInt("predictedDepartureTime");
+                    } else {
+                        nearby_stops_details[i].predicted_start_time = get_start_time(row, "predictedDepartureTime");
+                    }
                 } else {
                     shift_nearby_stops_details(i, nearby_stops_details);
 
@@ -150,11 +156,20 @@ public class AsyncNearbyStopsDetails extends AsyncTask<Object, Void, PebbleServi
                     String predicted="";
 
                     try {
-                        nearby_stops_details[i].predicted_start_time = get_start_time(row, "predictedDepartureTime");
-                        predicted ="*";
+                        if (is_garmin) {
+                            nearby_stops_details[i].predicted_start_time = row.getInt( "predictedDepartureTime");
+                        } else {
+                            nearby_stops_details[i].predicted_start_time = get_start_time(row, "predictedDepartureTime");
+                            predicted = "*";
+                        }
                     } catch (Exception e) {}
 
-                    nearby_stops_details[i].start_time = get_start_time(row, "departureTime");
+                    if (is_garmin) {
+                        nearby_stops_details[i].start_time = row.getInt( "departureTime");
+                    } else {
+                        nearby_stops_details[i].start_time = get_start_time(row, "departureTime");
+                    }
+
                     JSONObject routes = references.getJSONObject("routes");
                     JSONObject route = routes.getJSONObject(route_id);
 

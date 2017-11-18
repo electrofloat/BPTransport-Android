@@ -40,6 +40,7 @@ import com.garmin.android.connectiq.exception.ServiceUnavailableException;
 import com.getpebble.android.kit.PebbleKit;
 import com.getpebble.android.kit.util.PebbleDictionary;
 
+import java.lang.reflect.Array;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -72,6 +73,7 @@ public class PebbleService extends Service {
     private static final int MESSAGE_TYPE_GET_NEARBY_STOPS_DETAILS       = 4;
     private static final int MESSAGE_TYPE_GET_NEARBY_STOPS_DETAILS_REPLY = 5;
     private static final int MESSAGE_TYPE_GET_FAVORITES                  = 6;
+    private static final int MESSAGE_TYPE_EXIT                           = 7;
 
     private static final int LANGUAGE_TYPE_HUNGARIAN                     = 0;
     private static final int LANGUAGE_TYPE_ENGLISH                       = 1;
@@ -175,7 +177,16 @@ public class PebbleService extends Service {
                                 if (message.size() > 0) {
                                     for (Object o : message) {
                                         Log.d(getPackageName(), "Received message: " + o.toString());
-                                        int type = (Integer)o;
+                                        int type;
+                                        Integer id = null;
+                                        if (o instanceof ArrayList) {
+                                            ArrayList<Integer> int_array = (ArrayList)o;
+                                            type = int_array.get(0);
+                                            id = int_array.get(1);
+                                        } else {
+                                            type = (Integer)o;
+                                        }
+
                                         switch (type) {
                                             case MESSAGE_TYPE_GET_LANGUAGE: // Discover bulbs.
                                                 is_garmin_connected = true;
@@ -192,6 +203,11 @@ public class PebbleService extends Service {
                                                 });
                                                 break;
                                             case MESSAGE_TYPE_GET_NEARBY_STOPS_DETAILS:
+                                                if (id != null) {
+                                                    handler.post(new MyRunnable(PebbleService.this, nearby_stops_on_pebble[id].id, nearby_stops_on_pebble[id].string_id, true));
+                                                }
+                                                break;
+                                            case MESSAGE_TYPE_EXIT:
                                                 break;
                                             default:
                                                 Log.e(getPackageName(), "Received unexpected value/message from Garmin device: " + type);
@@ -331,17 +347,19 @@ public class PebbleService extends Service {
         private PebbleService service;
         long id;
         String string_id;
+        boolean is_garmin;
 
-        public MyRunnable(PebbleService service, long id, String string_id)
+        public MyRunnable(PebbleService service, long id, String string_id, boolean is_garmin)
         {
             this.service = service;
             this.id = id;
             this.string_id =string_id;
+            this.is_garmin = is_garmin;
         }
 
         @Override
         public void run() {
-            new AsyncNearbyStopsDetails(service).execute(id,string_id);
+            new AsyncNearbyStopsDetails(service).execute(id,string_id, is_garmin);
         }
     }
     public void receiveMessage (PebbleDictionary dictionary, int transactionId) {
@@ -372,7 +390,7 @@ public class PebbleService extends Service {
                 if (id < 0 || id > 9)
                     return;
                 //
-                handler.post(new MyRunnable(this, nearby_stops_on_pebble[id].id, nearby_stops_on_pebble[id].string_id));
+                handler.post(new MyRunnable(this, nearby_stops_on_pebble[id].id, nearby_stops_on_pebble[id].string_id, false));
 
                 //async_nearby_stops_details.execute(id, nearby_stops_on_pebble[id].direction);
                 break;
@@ -440,7 +458,7 @@ public class PebbleService extends Service {
 
     public void get_details()
     {
-        Runnable r = new MyRunnable(this, nearby_stops_on_pebble[0].id, nearby_stops_on_pebble[0].string_id);
+        Runnable r = new MyRunnable(this, nearby_stops_on_pebble[0].id, nearby_stops_on_pebble[0].string_id, false);
         handler.postDelayed(r, 1000);
     }
 
@@ -456,11 +474,13 @@ public class PebbleService extends Service {
         if (main_activity != null)
             main_activity.fill_textview(string);
 
+        nearby_stops_on_pebble = nearby_stops;
+
         if (is_garmin_connected) {
             send_nearby_stops_to_garmin(nearby_stops);
             return;
         }
-        nearby_stops_on_pebble = nearby_stops;
+
         if (nearby_stops_transaction_id < NEARBY_STOPS_LENGTH)
             nearby_stops_transaction_id = -1;
         else {
@@ -488,8 +508,29 @@ public class PebbleService extends Service {
             garmin_data.add(dictionary);
         }
 
+        if (garmin_data.size() > 1) {
+            enqueue_to_garmin(garmin_data);
+        }
+    }
+
+    private void send_nearby_stops_details_to_garmin(NearbyStopsDetails[] nearby_stops_details) {
+        ArrayList<Object> garmin_data = new ArrayList<Object>();
+
+        garmin_data.add(MESSAGE_TYPE_GET_NEARBY_STOPS_DETAILS_REPLY);
+        for (int i = 0; i < PebbleService.NEARBY_STOPS_LENGTH; i++) {
+            if (nearby_stops_details[i].line_number == null || nearby_stops_details[i].line_number.isEmpty())
+                continue;
+            Map<String, Object> dictionary = new HashMap<String, Object>();
+            dictionary.put("start_time", nearby_stops_details[i].start_time);
+            dictionary.put("pred_start", nearby_stops_details[i].predicted_start_time);
+            dictionary.put("direction", nearby_stops_details[i].direction_name);
+            dictionary.put("line_num", nearby_stops_details[i].line_number);
+            garmin_data.add(dictionary);
+        }
+
         enqueue_to_garmin(garmin_data);
     }
+
     private Runnable sendMessageRunnable = new Runnable() {
         @Override
         public void run() {
@@ -525,7 +566,9 @@ public class PebbleService extends Service {
                         handler.postDelayed(sendMessageRunnable, 200 + 200 * deliveryErrorCount);
                     } else {
                         Log.d(getPackageName(), "Message SUCCESS");
-                        messageQueue.remove(0);
+                        if (messageQueue.size() > 0) {
+                            messageQueue.remove(0);
+                        }
                         deliveryErrorCount = 0;
                         deliveryInProgress.set(false);
                         handler.postDelayed(sendMessageRunnable, 200);
@@ -573,6 +616,13 @@ public class PebbleService extends Service {
             Log.d(getPackageName(), "Line num: " + nearby_stops_details[i].line_number + ", direction_name: " + nearby_stops_details[i].direction_name + ",starttime: " + nearby_stops_details[i].start_time + ", tripid: " + nearby_stops_details[i].trip_id + ",predstart: " + nearby_stops_details[i].predicted_start_time);
             string += "Line num: " + nearby_stops_details[i].line_number + ", direction_name: " + nearby_stops_details[i].direction_name + ",starttime: " + nearby_stops_details[i].start_time + ", tripid: " + nearby_stops_details[i].trip_id + ",predstart: "+nearby_stops_details[i].predicted_start_time + "\n";
         }
+        if (main_activity != null)
+            main_activity.fill_textview(string);
+
+        if (is_garmin_connected) {
+            send_nearby_stops_details_to_garmin(nearby_stops_details);
+            return;
+        }
         nearby_stops_details_on_pebble = nearby_stops_details;
         if (nearby_stops_details_transaction_id < NEARBY_STOPS_DETAILS_LENGTH + 100)
             nearby_stops_details_transaction_id = 100-1;
@@ -582,8 +632,7 @@ public class PebbleService extends Service {
         }
 
         //send_next_nearby_stops_detail_to_pebble();
-        if (main_activity != null)
-            main_activity.fill_textview(string);
+
         //send to pebble
     }
 
@@ -625,6 +674,13 @@ public class PebbleService extends Service {
             unregisterReceiver(pebble_nack_receiver);
         } catch (IllegalArgumentException e) {
 
+        }
+        if (connect_iq != null) {
+            try {
+                connect_iq.unregisterAllForEvents();
+            } catch (InvalidStateException e) {
+
+            }
         }
         super.onDestroy();
 
