@@ -243,7 +243,8 @@ public class PebbleService extends Service {
         //connect_iq = ConnectIQ.getInstance(getApplicationContext(), ConnectIQ.IQConnectType.TETHERED);
         connect_iq = ConnectIQ.getInstance(getApplicationContext(), ConnectIQ.IQConnectType.WIRELESS);
 
-        connect_iq.initialize(getApplicationContext(), true, ciq_listener);
+        CWrapper.initializeConnectIQ(getApplicationContext(), connect_iq, false, ciq_listener);
+        //connect_iq.initialize(getApplicationContext(), false, ciq_listener);
 
 
         PebbleKit.registerPebbleConnectedReceiver(getApplicationContext(), new BroadcastReceiver() {
